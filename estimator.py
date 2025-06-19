@@ -1,15 +1,11 @@
 from const import EstimatorConstant
 import numpy as np
 from typing import Tuple
-
-
-import numpy as np
 from scipy.linalg import cho_factor, cho_solve
-from typing import Tuple
 
 class EKF:
     """
-    Optimized Extended Kalman Filter for vehicle state estimation.
+    Extended Kalman Filter class
 
     Args:
         estimator_constant : EstimatorConstant
@@ -21,14 +17,18 @@ class EKF:
 
     def initialize(self) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Initialize the estimator with mean and covariance of the initial state.
-        
+        Initialize the estimator with the mean and covariance of the initial
+        estimate.
+
         Returns:
-            xm : Initial state mean vector [p_x, p_y, psi, tau, l]
-            Pm : Initial state covariance matrix
+            xm : np.ndarray, dim: (num_states,)
+                The mean of the initial state estimate. The order of states is
+                given by x = [p_x, p_y, psi, tau, l].
+            Pm : np.ndarray, dim: (num_states, num_states)
+                The covariance of the initial state estimate. The order of
+                states is given by x = [p_x, p_y, psi, tau, l].
         """
         est_const = self.constant
-        # Initialize state mean with sensible defaults
         xm = np.array([
             0.0,
             0.0,
@@ -36,7 +36,8 @@ class EKF:
             est_const.start_velocity_bound / 2,
             (est_const.l_lb + est_const.l_ub) / 2
         ])
-        # Compute variances for covariance matrix
+        
+        # variances
         R = est_const.start_radius_bound
         var_px = var_py = (R ** 2) / 4
         var_psi = (est_const.start_heading_bound ** 2) / 3
@@ -53,30 +54,41 @@ class EKF:
         measurement: np.ndarray,
     ) -> Tuple[np.ndarray, np.ndarray]:
         """
-        Perform EKF estimation step.
-        
+        Estimate the state of the vehicle.
+
         Args:
-            xm_prev : Previous state mean
-            Pm_prev : Previous state covariance
-            inputs : Control inputs [u_delta, u_c]
-            measurement : Sensor measurements [z_px, z_py, z_psi, z_tau]
-            
+            xm_prev : np.ndarray, dim: (num_states,)
+                The mean of the previous posterior state estimate xm(k-1). The
+                order of states is given by x = [p_x, p_y, psi, tau, l].
+            Pm_prev : np.ndarray, dim: (num_states, num_states)
+                The covariance of the previous posterior state estimate Pm(k-1).
+                The order of states is given by x = [p_x, p_y, psi, tau, l].
+            inputs : np.ndarray, dim: (num_inputs,)
+                System inputs from time step k-1, u(k-1). The order of the
+                inputs is given by u = [u_delta, u_c].
+            measurement : np.ndarray, dim: (num_measurement,)
+                Sensor measurements from time step k, z(k). The order of the
+                measurements is given by z = [z_px, z_py, z_psi, z_tau].
+
         Returns:
-            xm : Updated state mean
-            Pm : Updated state covariance
+            xm : np.ndarray, dim: (num_states,)
+                The mean of the posterior estimate xm(k). The order of states is
+                given by x = [p_x, p_y, psi, tau, l].
+            Pm : np.ndarray, dim: (num_states, num_states)
+                The covariance of the posterior estimate Pm(k). The order of
+                states is given by x = [p_x, p_y, psi, tau, l].
         """
-        # Unpack inputs and constants
         u_delta_prev, u_c_prev = inputs
         px_prev, py_prev, psi_prev, tau_prev, l_prev = xm_prev
         Ts = self.constant.Ts
         
-        # Precompute beta and trig terms
+        # precomputations for some useful terns
         beta_prev = np.arctan(0.5 * np.tan(u_delta_prev))
         angle = psi_prev + beta_prev
         sin_angle, cos_angle = np.sin(angle), np.cos(angle)
         sin_beta = np.sin(beta_prev)
         
-        # State prediction
+        # state predictions
         px_pred = px_prev + tau_prev * cos_angle * Ts
         py_pred = py_prev + tau_prev * sin_angle * Ts
         psi_pred = psi_prev + (tau_prev / l_prev) * sin_beta * Ts
@@ -84,7 +96,7 @@ class EKF:
         l_pred = l_prev
         x_pred = np.array([px_pred, py_pred, psi_pred, tau_pred, l_pred])
         
-        # Jacobian of process model (F)
+        # jacobian
         F = np.eye(5)
         F[0, 2] = -tau_prev * sin_angle * Ts
         F[0, 3] = cos_angle * Ts
@@ -93,18 +105,18 @@ class EKF:
         F[2, 3] = (sin_beta / l_prev) * Ts
         F[2, 4] = -(tau_prev * sin_beta) / (l_prev ** 2) * Ts
         
-        # Process noise covariance (Q)
+        # process noise
         Q = np.zeros((5, 5))
         Q[2, 2] = (self.constant.sigma_beta ** 2) * (Ts ** 2)
         Q[3, 3] = (self.constant.sigma_uc ** 2) * (Ts ** 2)
         
-        # Predict covariance and enforce symmetry
+        # predict covariance
         P_pred = F @ Pm_prev @ F.T + Q
         P_pred = (P_pred + P_pred.T) * 0.5
         
-        # Measurement update if measurements available
-        available = ~np.isnan(measurement)
-        # Measurement model matrices
+
+        
+        # measurement model 
         H_full = np.array([
             [1, 0, 0, 0, 0],
             [0, 1, 0, 0, 0],
@@ -118,7 +130,8 @@ class EKF:
             self.constant.sigma_tau ** 2
         ])
         
-        # Select available measurements
+        # updatign for non missing measurements
+        available = ~np.isnan(measurement)
         H_avail = H_full[available]
         R_avail = R_full[np.ix_(available, available)]
         
@@ -133,14 +146,14 @@ class EKF:
         y = measurement[available] - H_avail @ x_pred
         x_updated = x_pred + K @ y
         P_updated = (np.eye(5) - K @ H_avail) @ P_pred
-        P_updated = (P_updated + P_updated.T) * 0.5 # enforcing symmetry of P
+        P_updated = (P_updated + P_updated.T) * 0.5
         
         return x_updated, P_updated
 
 
 class PF:
     """
-    Optimized Particle Filter class
+    Particle Filter class
 
     Args:
         estimator_constant : EstimatorConstant
@@ -175,12 +188,13 @@ class PF:
 
         Returns:
             particles: np.ndarray, dim: (num_states, num_particles)
-                The particles corresponding to the initial state estimate.
+                The particles corresponding to the initial state estimate. The
+                order of states is given by x = [p_x, p_y, psi, tau, l].
         """
         est_const = self.constant
         num_particles = self.num_particles
 
-        # Vectorized initialization
+        # initialization
         theta = np.random.uniform(0, 2 * np.pi, num_particles)
         radius = est_const.start_radius_bound * np.sqrt(np.random.uniform(0, 1, num_particles))
         px0 = radius * np.cos(theta)
@@ -198,19 +212,23 @@ class PF:
             measurement: np.ndarray,
     ) -> np.ndarray:
         """
-        Optimized state estimation using particle filter.
+        Estimate the state of the vehicle.
 
         Args:
             particles : np.ndarray, dim: (num_states, num_particles)
-                Previous particles (k-1).
+                The posteriors of the particles of the previous time step k-1.
+                The order of states is given by x = [p_x, p_y, psi, tau, l].
             inputs : np.ndarray, dim: (num_inputs,)
-                System inputs u(k-1) = [u_delta, u_c].
+                System inputs from time step k-1, u(k-1). The order of the
+                inputs is given by u = [u_delta, u_c].
             measurement : np.ndarray, dim: (num_measurement,)
-                Sensor measurements z(k) = [z_px, z_py, z_psi, z_tau].
+                Sensor measurements from time step k, z(k). The order of the
+                measurements is given by z = [z_px, z_py, z_psi, z_tau].
 
         Returns:
             posteriors : np.ndarray, dim: (num_states, num_particles)
-                Posterior particles at time step k.
+                The posterior particles at time step k. The order of states is
+                given by x = [p_x, p_y, psi, tau, l].
         """
         u_delta_prev, u_c_prev = inputs
         num_particles = particles.shape[1]

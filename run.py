@@ -96,7 +96,7 @@ if __name__ == "__main__":
 
     # State definition
     num_states = 5  # [x, y, psi, tau, l]
-    noise_type = "Gaussian"  # "Gaussian" or "Non-Gaussian"
+    noise_type = "Non-Gaussian"  # "Gaussian" or "Non-Gaussian"
 
     # Import constants
     est_const = EstimatorConstant()
